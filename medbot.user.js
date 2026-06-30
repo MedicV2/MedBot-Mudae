@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MedBot
 // @author       @medc
-// @version      3.1
+// @version      3.2
 // @description  Currently WIP, tool that automates the discord bot Mudae.
 // @match        *://discord.com/*
 // @grant        GM_getValue
