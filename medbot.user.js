@@ -55,9 +55,10 @@
     { key: 'chaos',   label: 'Chaos',   url: 'https://cdn.discordapp.com/emojis/1441097472587075758.webp?size=44' },
   ];
 
-  // Lookup maps derived from KAKERA_TYPES
-  const KAKERA_URL_TO_KEY = new Map(KAKERA_TYPES.map(k => [normalizeUrl(k.url), k.key]));
-  const KAKERA_BY_KEY     = Object.fromEntries(KAKERA_TYPES.map(k => [k.key, k]));
+  // Match buttons by emoji data-id, not URL: Discord serves the same emoji
+  // under different formats (webp/png/gif), so URL comparison is unreliable.
+  const KAKERA_ID_TO_KEY = new Map(KAKERA_TYPES.map(k => [k.url.match(/\/emojis\/(\d+)\./)[1], k.key]));
+  const KAKERA_BY_KEY    = Object.fromEntries(KAKERA_TYPES.map(k => [k.key, k]));
 
   // Every valid roll command variant recognised by Mudae
   const MUDAE_ROLL_COMMANDS = new Set([
@@ -272,16 +273,6 @@
   // ===================================================================
   //  SECTION 5,  UTILITY FUNCTIONS
   // ===================================================================
-
-  // Strip query params from a URL so emoji URLs can be compared reliably.
-  function normalizeUrl(url) {
-    try {
-      const parsed = new URL(url, location.origin);
-      return `${parsed.origin}${parsed.pathname}`;
-    } catch {
-      return (url || '').split('?')[0];
-    }
-  }
 
   // Return a random integer between min and max (inclusive).
   function randomInt(min, max) {
@@ -677,16 +668,10 @@
     const msgId = getMsgId(msgEl);
     if (!msgId || isMessageProcessed(msgId, 'kakera')) return;
 
-    // Find all kakera buttons whose emoji URL matches a selected type
-    const matchingButtons = [...msgEl.querySelectorAll('button')].filter(btn => {
-      const emojiImg = btn.querySelector('img.emoji');
-      return emojiImg
-        && selectedKakeraTypes.has(KAKERA_URL_TO_KEY.get(normalizeUrl(emojiImg.src)))
-        && btn.closest('[id^="message-accessories-"]');
-    });
-
-    if (!matchingButtons.length) return;
-    matchingButtons.forEach(clickButton);
+    for (const btn of msgEl.querySelectorAll('[id^="message-accessories-"] button')) {
+      const key = KAKERA_ID_TO_KEY.get(btn.querySelector('img.emoji')?.dataset?.id);
+      if (key && selectedKakeraTypes.has(key)) clickButton(btn);
+    }
   }
 
 
@@ -1500,17 +1485,6 @@
     };
   }
 
-  /**
-   * Check if a message looks like a $tu response addressed to the current user.
-   * Must start with the user's handle and contain both roll count and claim info.
-   */
-  function isTuResponse(text) {
-    const handle = getOwnHandle();
-    if (handle !== 'Unknown' && !new RegExp(`^${escapeRegExp(handle)},`, 'i').test(text)) return false;
-    return /you have \d+ rolls/i.test(text)
-      && /(?:you can(?:'t)? claim|next claim reset)/i.test(text);
-  }
-
   // Format a millisecond duration as a human-readable countdown string.
   function formatCountdown(ms) {
     if (ms <= 0) return 'now';
@@ -1666,15 +1640,20 @@
    */
   function handleTuResponse(msgEl) {
     const text = getMessageText(msgEl);
-    if (!isTuResponse(text)) return;
+    // A $tu reply always reports both the roll count and the claim status.
+    if (!/you have \d+ rolls/i.test(text)
+        || !/(?:you can(?:'t)? claim|next claim reset)/i.test(text)) return;
 
     const msgId = getMsgId(msgEl);
     if (!msgId || isMessageProcessed(msgId)) return;
 
-    // Accept the response if we're actively waiting, or if $tu data exists
-    // and the message is from the current minute (catches manual $tu usage)
+    // Outside an explicit Configure, only accept a fresh reply addressed to us
+    // (avoids grabbing another player's $tu). During Configure we trust the reply
+    // we asked for, since Mudae uses your server nickname which may not match the handle.
     if (!isWaitingForTuReply) {
       if (!mudaeStatus.lastUpdated) return;
+      const handle = getOwnHandle();
+      if (handle !== 'Unknown' && !new RegExp(`^${escapeRegExp(handle)},`, 'i').test(text)) return;
       const msgTime = getMessageTimestamp(msgEl);
       if (!msgTime || Math.floor(Date.now() / 60000) !== Math.floor(msgTime / 60000)) return;
     }
@@ -2504,8 +2483,12 @@
       sendDiscordMessage('$tu');
       configureButton.textContent = 'Sent,  waiting for reply…';
       configureButton.disabled = true;
-      // Auto-reset button after 8s if no response
-      setTimeout(() => { configureButton.textContent = 'Configure'; configureButton.disabled = false; }, 8000);
+      // After 8s with no reply, reset the button and stop trusting a late $tu
+      setTimeout(() => {
+        isWaitingForTuReply = false;
+        configureButton.textContent = 'Configure';
+        configureButton.disabled = false;
+      }, 8000);
     });
 
     // -- Live $tu countdown refresh (1s interval while settings panel is open) --
